@@ -1,0 +1,19 @@
+requests
+beautifulsoup4
+lxml
+pytz
+phonenumbers
+reportlab
+Pillow
+PyQt6
+scrapling
+
+# After running pip install -r requirements.txt, also run:
+# python -m playwright install chromium
+
+# Optional integrations
+
+```bash
+pip install holehe               # Email registration across 120+ sites
+pip install sherlock-project     # Username search across 300+ platforms
+pip install truecallerpy         # Caller ID and name lookup
