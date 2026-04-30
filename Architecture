@@ -1,0 +1,240 @@
+# 🏗️ OSINT Profiler — Architecture
+
+## Overview
+
+OSINT Profiler is structured as a modular pipeline. Each investigation passes through four stages: **input parsing → data collection → filtering & scoring → output generation.**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Entry Points                         │
+│                                                             │
+│        GUI (PyQt6 MainWindow)   CLI (argparse)              │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      OSINTEngine                            │
+│                                                             │
+│  Orchestrates the full investigation lifecycle.             │
+│  Accepts: email, phone, username, country_code              │
+│  Returns: unified report dict                               │
+└──┬──────────────────┬───────────────────┬───────────────────┘
+   │                  │                   │
+   ▼                  ▼                   ▼
+Email Path       Phone Path         Username Path
+```
+
+---
+
+## Module Breakdown
+
+### 1. `OSINTEngine`
+The central orchestrator. Coordinates all sub-modules, merges results, and builds the final report object.
+
+**Responsibilities:**
+- Dispatches to the correct investigation path based on input type
+- Calls external tools (Holehe, Sherlock, Truecaller) if available
+- Manages parallel search execution via `ThreadPoolExecutor`
+- Builds the final `report` dict with findings, statistics, and anomalies
+
+---
+
+### 2. `SearchEngine`
+Wraps DuckDuckGo search with rate limiting, jitter, and proxy support.
+
+```
+query → rate limiter → StealthyFetcher (scrapling) → DuckDuckGo HTML → parsed results
+```
+
+- **Deep scan mode:** increases jitter and reduces parallelism to avoid 403 blocks
+- **Proxy support:** routes all requests through a specified proxy URL
+- Uses `scrapling.StealthyFetcher` to bypass bot detection
+
+---
+
+### 3. `EnhancedSearcher`
+Generates investigation-specific search query sets.
+
+| Method | Queries generated |
+|---|---|
+| `search_email_web()` | 40+ queries — social, academic, developer, breach, document, marketplace |
+| `search_phone_web()` | 35+ queries — social, business, spam, directory, real estate, marketplace |
+| `search_email()` | Direct HEAD requests to 8 platforms using the email local-part as username |
+| `search_phone()` | WhatsApp / Telegram / Signal / Viber links + spam database queries |
+
+---
+
+### 4. `PlatformProber`
+Directly probes social platforms for username variants.
+
+```
+username → variant generator → HEAD request (20 threads) → 200/301/302 = found
+```
+
+**Variant generation** produces up to ~40 variants per username:
+- Separator swaps (`.` `_` `-`)
+- Prefix/suffix additions (`_`, `.`, `-`, numbers)
+- Part extraction for compound usernames (e.g. `john.doe` → `johndoe`, `john`, `doe`)
+- Length truncations
+
+**Supported platforms:** Instagram, Twitter/X, GitHub, Reddit, LinkedIn, YouTube, Facebook, TikTok, Medium, Pinterest, Twitch
+
+---
+
+### 5. `ResultFilter`
+Scores and filters raw search results.
+
+```
+raw results → blacklist check → generic page check → spam check
+           → relevance score (0–100) → sort by confidence
+```
+
+**Scoring factors:**
+- +40 if URL matches a known profile URL pattern (`/@`, `/user/`, `/in/`)
+- +30 if domain is a known social platform
+- +30 if query string appears in URL
+- +20 if query string appears in title
+- −40 if domain is a known noise/spam domain
+- = 0 (filtered out) if URL matches documentation, login, or support pages
+
+---
+
+### 6. `ProfileAnalyzer`
+Deep-dives into high-confidence URLs to extract profile metadata.
+
+- Fetches page HTML and parses Open Graph / Twitter Card meta tags
+- Extracts title, description, bio, followers
+- Platform-specific parsing for GitHub and Instagram
+
+---
+
+### 7. External Tool Integrations
+
+| Tool | Trigger | Output |
+|---|---|---|
+| `holehe` | Email input | Subprocess call → parses `[+]` lines → confidence 98 |
+| `sherlock` | Username input | Subprocess call → parses `[+] Site: URL` lines → confidence 95 |
+| `truecallerpy` | Phone input + auth ID | Async API call → name, carrier, spam score → confidence 100 |
+
+All three degrade gracefully — if the tool is not installed, the investigation continues without it.
+
+---
+
+### 8. `ReportGenerator`
+Produces output in four formats from the unified report dict.
+
+| Format | Library | Notes |
+|---|---|---|
+| JSON | `json` stdlib | Full report including raw metadata |
+| TXT | stdlib file I/O | Human-readable, section-based |
+| HTML | string template | Standalone file, confidence color coding |
+| PDF | `reportlab` | Configurable font, page size, sections, phone intel table |
+
+**Categorization mode:** when enabled, findings are split into "High Confidence" (≥50) and "Other Findings" groups within each format.
+
+---
+
+### 9. `GraphGenerator`
+Produces an interactive HTML network graph using vis.js.
+
+```
+findings → nodes (platform) + edges (target → platform) → vis.js HTML file
+```
+
+- Node color = confidence level (green / orange / grey)
+- Target node = red, size 30
+- Controls: layout mode, freeze physics, fit graph, export PNG/JPG
+- Generates two graphs per investigation: all findings + filtered (≥50 confidence) only
+
+---
+
+## Data Flow
+
+```
+Input
+  │
+  ├── Email ──► Holehe subprocess
+  │         ──► Direct platform HEAD checks
+  │         ──► 40+ DuckDuckGo queries
+  │
+  ├── Phone ──► Truecaller API
+  │         ──► phonenumbers (carrier, country, line type)
+  │         ──► Spam database query generation
+  │         ──► 35+ DuckDuckGo queries
+  │
+  └── Username ──► Sherlock subprocess
+               ──► PlatformProber (HEAD requests, 20 threads)
+               ──► Per-variant DuckDuckGo queries
+                        │
+                        ▼
+               Raw findings list
+                        │
+                        ▼
+               ResultFilter (score + deduplicate)
+                        │
+                        ▼
+               ProfileAnalyzer (metadata enrichment on high-conf items)
+                        │
+                        ▼
+               detect_anomalies()
+                        │
+                        ▼
+               Report dict  ──► JSON / TXT / HTML / PDF
+                            ──► Graph HTML (all + filtered)
+```
+
+---
+
+## Threading Model
+
+| Component | Workers | Reason |
+|---|---|---|
+| `PlatformProber` | 20 threads | Fast HEAD requests, I/O bound |
+| `EnhancedSearcher.search_email()` | 10 threads | Concurrent platform checks |
+| `OSINTEngine` search execution | 1 (normal) / 1 (deep) | DuckDuckGo rate limit compliance |
+| `ExportWorker` (GUI) | 1 QThread | Keeps UI responsive during export |
+| `WorkerThread` (GUI) | 1 QThread | Keeps UI responsive during investigation |
+
+---
+
+## Report Object Schema
+
+```json
+{
+  "target": "email:x@x.com | phone:+1234 | username:johndoe",
+  "timestamp": "2026-01-01T12:00:00+00:00",
+  "processing_time": 42.5,
+  "parameters": {
+    "email": "x@x.com",
+    "phone": "+1234567890",
+    "username": "johndoe",
+    "country_code": "91",
+    "max_search": 30
+  },
+  "findings": [
+    {
+      "platform": "github.com",
+      "url": "https://github.com/johndoe",
+      "title": "johndoe (John Doe)",
+      "snippet": "...",
+      "confidence": 85,
+      "type": "platform_probe | web_search | api_probe | phone_intelligence",
+      "timestamp": "...",
+      "metadata": { "bio": "...", "followers": "120 followers" }
+    }
+  ],
+  "filtered_findings": [],
+  "statistics": {
+    "total_findings": 42,
+    "high_confidence_findings": 18,
+    "average_confidence": 63.4,
+    "queries_executed": 35,
+    "platforms": { "github.com": 3, "twitter.com": 2 }
+  },
+  "anomalies": [
+    { "type": "domain_concentration", "domain": "example.com", "count": 8, "message": "..." }
+  ],
+  "graph_path": "reports/graph_johndoe_20260101_120000.html",
+  "filtered_graph_path": "reports/graph_johndoe_filtered_20260101_120000.html"
+}
+```
