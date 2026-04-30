@@ -28,7 +28,7 @@
 
 ## 📸 Screenshots
 
-![GUI](gui.png)
+<img width="1920" height="1032" alt="gui" src="https://github.com/user-attachments/assets/832a1c48-3346-4676-a1dc-b55c46134347" />
 
 ---
 
