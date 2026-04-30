@@ -2,6 +2,12 @@
 
 > A comprehensive Open Source Intelligence (OSINT) investigation tool for gathering and analyzing publicly available information — featuring a sleek PyQt6 GUI, full CLI mode, and multi-format reporting.
 
+![Version](https://img.shields.io/badge/Version-1.0-blue?style=flat-square)
+![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=flat-square&logo=python)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+![GUI](https://img.shields.io/badge/GUI-PyQt6-orange?style=flat-square)
+
 ## 📦 Download
 
 | Option | For who | Link |
